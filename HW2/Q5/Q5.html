@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<head>
+    <title>Wildlife Trafficking Map</title>
+    <!-- import required libraries -->
+    <script type="text/javascript" src="../lib/d3.v5.min.js"></script>
+    <script type="text/javascript" src="../lib/d3-dsv.min.js"></script>
+    <script type="text/javascript" src="../lib/d3-geo-projection.v2.min.js"></script>
+    <script type="text/javascript" src="../lib/topojson.v2.min.js"></script>
+    <script type="text/javascript" src="../lib/d3-tip.min.js"></script>
+    <script type="text/javascript" src="../lib/d3-legend.min.js"></script>
+</head>
+
+<body>
+    <!-- Add heading for the visualization -->
+    <h1>Wildlife Trafficking Incidents by Country</h1>
+    
+    <!-- Create dropdown element -->
+    <select id="yearDropdown"></select>
+    <svg id="choropleth"></svg>
+
+    <script>
+        // define margin and dimensions for svg
+        const margin = {top: 20, right: 20, bottom: 20, left: 20};
+        const width = 960 - margin.left - margin.right;
+        const height = 500 - margin.top - margin.bottom;
+        
+        // create svg
+        const svg = d3.select("#choropleth")
+            .attr("width", width + margin.left + margin.right)
+            .attr("height", height + margin.top + margin.bottom)
+            .append("g")
+            .attr("transform", `translate(${margin.left},${margin.top})`);
+        
+        // create color scale
+        const colors = ["#fee8c8", "#fdbb84", "#fc8d59", "#e34a33"];
+        const colorScale = d3.scaleQuantile()
+            .range(colors);
+        
+        // Initialize tooltip with proper styling
+        const tooltip = d3.tip()
+            .attr("class", "d3-tip")
+            .attr("id", "tooltip")
+            .offset([-10, 0])
+            .html(function(d) {
+                return "Loading...";
+            });
+
+        // Add CSS style for tooltip
+        const style = document.createElement('style');
+        style.textContent = `
+            .d3-tip {
+                line-height: 1.4;
+                font-weight: bold;
+                padding: 12px;
+                background: rgba(0, 0, 0, 0.8);
+                color: #fff;
+                border-radius: 4px;
+                pointer-events: none;
+            }
+        `;
+        document.head.appendChild(style);
+        
+        svg.call(tooltip);
+        
+        var projection = d3.geoNaturalEarth1()
+            .scale(width / 2 / Math.PI)
+            .translate([width / 2, height / 2]);
+            
+        var path = d3.geoPath()
+            .projection(projection);
+
+        Promise.all([
+            d3.json("data/world_countries.json"),
+            d3.csv("data/wildlife_trafficking.csv")
+        ]).then(function([world, traffickingData]) {
+            ready(null, world, traffickingData);
+        }).catch(function(error) {
+            console.error("Error loading the data files:", error);
+        });
+        
+        function ready(error, world, traffickingData) {
+            if (error) throw error;
+            
+            let years = [...new Set(traffickingData.map(d => d.Year))].sort();
+            
+            d3.select("#yearDropdown")
+                .selectAll("option")
+                .data(years)
+                .enter()
+                .append("option")
+                .attr("value", d => d)
+                .text(d => d);
+            
+            d3.select("#yearDropdown")
+                .on("change", function() {
+                    createMapAndLegend(world, traffickingData, this.value);
+                });
+            
+            createMapAndLegend(world, traffickingData, years[0]);
+        }
+
+        function createMapAndLegend(world, traffickingData, selectedYear) {
+            svg.select("#countries").remove();
+            svg.select("#legend").remove();
+            
+            let selectedYearData = traffickingData.filter(d => d.Year === selectedYear);
+            let sortedData = selectedYearData.map(d => +d["Number_of_Incidents"])
+                .filter(d => !isNaN(d))
+                .sort((a, b) => a - b);
+            
+            let quantileScale = d3.scaleQuantile()
+                .domain(sortedData)
+                .range(colors);
+            
+            let quartiles = Array.from({length: 5}, (_, i) => i * 0.25)
+                .map(q => d3.quantile(sortedData, q));
+            let labels = Array(4).fill(0)
+                .map((_, i) => `${d3.format(".2f")(quartiles[i])} to ${d3.format(".2f")(quartiles[i + 1])}`);
+
+            let countries = svg.append("g").attr("id", "countries")
+            countries.selectAll("path")
+                .data(world.features)
+                .enter().append("path")
+                .attr("d", path)
+                .attr("fill", function(d) {
+                    let countryData = selectedYearData.find(data => 
+                        data["Country of Incident"] === d.properties.name);
+                    if (!countryData || 
+                        !countryData["Number_of_Incidents"] || 
+                        isNaN(+countryData["Number_of_Incidents"]) || 
+                        +countryData["Number_of_Incidents"] === 0) {
+                        return "#ccc";
+                    }
+                    return quantileScale(+countryData["Number_of_Incidents"]);
+                })
+                .attr("stroke", "white")
+                .style("opacity", 1)
+                .on("mouseover", function(d) {
+                    d3.selectAll("path").style("opacity", 0.1);
+                    d3.select(this).style("opacity", 1).attr("stroke", "black");
+
+                    let countryData = selectedYearData.find(data => 
+                        data["Country of Incident"] === d.properties.name);
+                    
+                    let tooltipContent = `
+                        <strong>Country:</strong> ${d.properties.name}<br/>
+                        <strong>Year:</strong> ${selectedYear}<br/>
+                        <strong>Number of Incidents:</strong> ${countryData ? countryData["Number_of_Incidents"] : "N/A"}<br/>
+                        <strong>Average Fine (USD):</strong> ${countryData ? d3.format(".2f")(+countryData["Average_Fine"]) : "N/A"}<br/>
+                        <strong>Average Imprisonment (Years):</strong> ${countryData ? d3.format(".2f")(+countryData["Average_Imprisonment"]) : "N/A"}
+                    `;
+                    
+                    tooltip.html(tooltipContent);
+                    tooltip.show(d, this);
+                    d3.select(this).style('stroke-width', 3);
+                })
+                .on('mouseout', function(d) {
+                    d3.selectAll("path").style("opacity", 1).attr("stroke", "white");
+                    tooltip.hide();
+                    d3.select(this).style('stroke-width', 1);
+                });
+
+            svg.append("g")
+                .attr("id", "legend")
+                .attr("transform", `translate(${width - 120}, ${margin.top})`);
+
+            var legend = d3.legendColor()
+                .orient("vertical")
+                .labels(d => labels[d.i])
+                .scale(quantileScale)
+                .labelFormat(d3.format(".2f"))
+                .labelAlign("start")
+                .labelOffset(10)
+                .labelWrap(100)
+                .cells(4);
+            
+            svg.select("#legend")
+                .style("font-size", "10px")
+                .call(legend);
+            
+            svg.append("text")
+                .attr("id", "credit")
+                .attr("x", width / 2)
+                .attr("y", height - 10)
+                .attr("text-anchor", "middle")
+                .style("font-size", "12px")
+                .text("rpeng37");
+        }
+        
+    </script>
+
+</body>
+
+</html>
